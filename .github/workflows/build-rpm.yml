@@ -1,0 +1,94 @@
+# Copyright (c) 2026 fishfinal
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Build Test RPMs
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build Go Binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/bin/one   ./cmd/one
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/bin/two   ./cmd/two
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/bin/three ./cmd/three
+          ls -l dist/bin
+
+      - name: Build RPMs in CentOS 7
+        uses: addnab/docker-run-action@v3
+        with:
+          image: centos:7
+          options: -v ${{ github.workspace }}:/workspace -w /workspace
+          run: |
+            set -euo pipefail
+
+            # CentOS 7 EOL -> vault 源
+            sed -i 's|^mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/CentOS-*.repo
+            sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*.repo
+            yum clean all
+            yum install -y rpm-build rpmdevtools
+
+            command -v rpmdev-setuptree
+            command -v rpmbuild
+
+            rpmdev-setuptree
+
+            cp -v specs/*.spec ~/rpmbuild/SPECS/
+            cp -v dist/bin/one   ~/rpmbuild/SOURCES/one
+            cp -v dist/bin/two   ~/rpmbuild/SOURCES/two
+            cp -v dist/bin/three ~/rpmbuild/SOURCES/three
+
+            rpmbuild -ba ~/rpmbuild/SPECS/one.spec
+            rpmbuild -ba ~/rpmbuild/SPECS/two.spec
+            rpmbuild -ba ~/rpmbuild/SPECS/three.spec
+
+            mkdir -p /workspace/output
+            cp -v ~/rpmbuild/RPMS/x86_64/*.rpm /workspace/output/
+            ls -l /workspace/output
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/*.rpm
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          token: ${{ secrets.ACCESS_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
